@@ -31,6 +31,41 @@ function bufferToString(v) {
     default: return String(v);
   }
 }
+// GET /api/snmp/users?ip=1.2.3.4&community=public
+async function getUsers(req, res) {
+  const ip = req.query.ip;
+  const community = req.query.community || "public";
+  const version = req.query.version || "2c";
+  if (!ip) return res.status(400).json({ error: "ip is required" });
+
+  const session = createSession(ip, { version, community, timeout: 2500, retries: 1 });
+
+  try {
+    const oids = [
+      "1.3.6.1.2.1.25.1.5.0", // hrSystemNumUsers
+      "1.3.6.1.2.1.25.1.6.0"  // hrSystemProcesses
+    ];
+
+    const varbinds = await new Promise((resolve, reject) => {
+      session.get(oids, (err, vbs) => (err ? reject(err) : resolve(vbs)));
+    });
+
+    if (varbinds.some(vb => snmp.isVarbindError(vb))) {
+      return res.status(502).json({ error: "SNMP error in varbinds" });
+    }
+
+    res.json({
+      target: ip,
+      numUsers: Number(varbinds[0].value),
+      numProcesses: Number(varbinds[1].value)
+    });
+  } catch (e) {
+    res.status(502).json({ error: e?.message || String(e) });
+  } finally {
+    closeSession(session);
+  }
+}
+
 
 
 function extractIndex(oid, base) {
@@ -41,44 +76,6 @@ function extractIndex(oid, base) {
   return Number.isFinite(n) ? n : idx; // some tables have composite indexes; keep string then
 }
 
-
-// GET /api/snmp/hrstorage/type?ip=1.2.3.4&community=public
-async function getHrStorageType(req, res) {
-  const ip = req.query.ip;
-  const community = req.query.community || 'public';
-  const version = req.query.version || '2c';
-  if (!ip) return res.status(400).json({ error: 'ip is required' });
-
-  const base = String((OIDS && OIDS.hrStorageType) || '');   // ensure string
-  if (!base) return res.status(500).json({ error: 'OIDS.hrStorageType is undefined' });
-
-  const session = createSession(ip, { version, community, timeout: 2500, retries: 1 });
-
-  try {
-    const varbinds = await walk(session, base);
-
-    const rows = varbinds
-      .filter(vb =>
-        vb &&
-        typeof vb.oid === 'string' &&
-        !netSnmp.isVarbindError(vb)
-      )
-      .map(vb => {
-        const index = extractIndex(vb.oid, base);
-        return {
-          index,
-          type: bufferToString(vb.value),  // hrStorageType is an OBJECT IDENTIFIER
-        };
-      })
-      .filter(r => r.index !== null);
-
-    res.json({ target: ip, oid: base, count: rows.length, data: rows });
-  } catch (e) {
-    res.status(502).json({ error: e?.message || String(e) });
-  } finally {
-    closeSession(session);
-  }
-}
 // GET /api/snmp/hrstorage/descr?ip=1.2.3.4&community=public
 async function getHrStorage(req, res) {
   const ip = req.query.ip;
@@ -156,106 +153,6 @@ async function getHrStorage(req, res) {
   }
 }
 
-
-async function getHrStorageDescr(req, res) {
-
-  const ip = req.query.ip;
-  const community = req.query.community || "public";
-  const version = req.query.version || "2c";
-  
-  if (!ip) return res.status(400).json({ error: "ip is required" });
-
-  const session = createSession(ip, { version, community, timeout: 2500, retries: 1 });
-
-  try {
-    const base = OIDS.hrStorageDescr;
-    const varbinds = await walk(session, base);
-
-    const rows = varbinds
-      .filter(vb => !require("net-snmp").isVarbindError(vb))
-      .map(vb => ({
-        index: extractIndex(vb.oid, base),
-        descr: bufferToString(vb.value)
-      }));
-
-    res.json({
-      target: ip,
-      oid: base,
-      count: rows.length,
-      data: rows
-    });
-  }catch(e){
-    res.status(502).json({ error: e?.message || String(e) });
-  } finally {
-    closeSession(session);
-  }
-
-}
-
-// GET /api/snmp/hrstorage/alloc?ip=1.2.3.4&community=public
-
-async function getHrStorageAlloc(req,res){
- const ip = req.query.ip;
-  const community = req.query.community || "public";
-  const version = req.query.version || "2c";
-
-  if (!ip) return res.status(400).json({ error: "ip is required" });
-  
-  const session = createSession(ip, { version, community, timeout: 2500, retries: 1 });
-  try {
-    const base = OIDS.hrStorageAllocUnits;
-    const varbinds = await walk(session, base);
-    
-    const rows = varbinds
-      .filter(vb => !require("net-snmp").isVarbindError(vb))
-      .map(vb => ({
-        index: extractIndex(vb.oid, base),
-        allocUnits: Number(vb.value)
-      }));
-    res.json({
-      target: ip,
-      oid: base,
-      count: rows.length,
-      data: rows
-    });
-  }catch(e){
-    res.status(502).json({ error: e?.message || String(e) });
-  } finally {
-    closeSession(session);
-  }
-}
-
-// GET /api/snmp/hrstorage/name?ip=1.2.3.4&community=public
-async function getHrStorageSize(req, res){
-  const ip = req.query.ip;
-  const community = req.query.community || "public";
-  const version = req.query.version || "2c";
-  
-  if (!ip) return res.status(400).json({ error: "ip is required" });
-  const session = createSession(ip, { version, community, timeout: 2500, retries: 1 });
-  try {
-    const base = OIDS.hrStorageSize;
-    const varbinds = await walk(session, base);
-    
-    const rows = varbinds
-      .filter(vb => !require("net-snmp").isVarbindError(vb))
-      .map(vb => ({
-        index: extractIndex(vb.oid, base),
-        size: Number(vb.value)
-      }));
-    res.json({
-      target: ip,
-      oid: base,
-      count: rows.length,
-      data: rows
-    });
-  }catch(e){
-    res.status(502).json({ error: e?.message || String(e) });
-  } finally {
-    closeSession(session);
-  }
-}
-
 // GET /api/snmp/hrstorage/used?ip=1.2.3.4&community=public
 
 async function getHrStorageUsed(req, res){
@@ -319,40 +216,7 @@ async function getHrStorageUsed(req, res){
   }
 }
 
-// GET /api/snmp/hrswrun/name?ip=1.2.3.4&community=public
-async function getHrSWRunName(req, res) {
-  const ip = req.query.ip;
-  const community = req.query.community || "public";
-  const version = req.query.version || "2c";
 
-  if (!ip) return res.status(400).json({ error: "ip is required" });
-
-  const session = createSession(ip, { version, community, timeout: 2500, retries: 1 });
-
-  try {
-    const base = OIDS.hrSWRunName;
-    const varbinds = await walk(session, base);
-
-    // Map to { index, name }
-    const rows = varbinds
-      .filter(vb => !require("net-snmp").isVarbindError(vb))
-      .map(vb => ({
-        index: extractIndex(vb.oid, base),
-        name: bufferToString(vb.value)
-      }));
-
-    res.json({
-      target: ip,
-      oid: base,
-      count: rows.length,
-      data: rows
-    });
-  } catch (e) {
-    res.status(502).json({ error: e?.message || String(e) });
-  } finally {
-    closeSession(session);
-  }
-}
 
 // GET /api/snmp/system/descr?ip=1.2.3.4&community=public
 async function getSysDescr(req, res) {
@@ -373,39 +237,6 @@ async function getSysDescr(req, res) {
     }
     res.json({ target: ip, oid: OID, value: Buffer.isBuffer(vb.value) ? vb.value.toString() : vb.value });
   } catch (e) {
-    res.status(502).json({ error: e?.message || String(e) });
-  } finally {
-    closeSession(session);
-  }
-}
-
-//GET /api/snmp/hrswrun/path?ip=1.2.3.4&community=public
-async function getHrSWRunPath(req, res) {
-  
-  const ip = req.query.ip;
-  const community = req.query.community || "public";
-  const version = req.query.version || "2c";
-
-  if (!ip) return res.status(400).json({ error: "ip is required" });
-  
-  const session = createSession(ip, { version, community, timeout: 2500, retries: 1 });
-  try {
-    const base = OIDS.hrSWRunPath;
-    const varbinds = await walk(session, base);
-    
-    const rows = varbinds
-      .filter(vb => !require("net-snmp").isVarbindError(vb))
-      .map(vb => ({
-        index: extractIndex(vb.oid, base),
-        name: bufferToString(vb.value)
-      }));
-    res.json({
-      target: ip,
-      oid: base,
-      count: rows.length,
-      data: rows
-    });
-  }catch(e){
     res.status(502).json({ error: e?.message || String(e) });
   } finally {
     closeSession(session);
@@ -480,100 +311,6 @@ async function getProcesses(req, res) {
   }
 }
 
-
-//GET /api/snmp/hrswrun/status?ip=1.2.3.4&community=public
-async function getHrSWRunStatus(req, res) {
-  const ip = req.query.ip;
-  const community = req.query.community || "public";
-  const version = req.query.version || "2c";
-  
-  if (!ip) return res.status(400).json({ error: "ip is required" });
-  const session = createSession(ip, { version, community, timeout: 2500, retries: 1 });
-  try {
-    const base = OIDS.hrSWRunStatus;
-    const varbinds = await walk(session, base);
-    
-    const rows = varbinds
-      .filter(vb => !require("net-snmp").isVarbindError(vb))
-      .map(vb => ({
-        index: extractIndex(vb.oid, base),
-        status: Number(vb.value)
-      }));
-    res.json({
-      target: ip,
-      oid: base,
-      count: rows.length,
-      data: rows
-    });
-  }catch(e){
-    res.status(502).json({ error: e?.message || String(e) });
-  } finally {
-    closeSession(session);
-  }
-}
-
-//GET /api/snmp/hrswrun/perfcpu?ip=1.2.3.4&community=public
-async function getHrSWRunPerfCPU(req, res) {
-  const ip = req.query.ip;
-  const community = req.query.community || "public";
-  const version = req.query.version || "2c";
-  
-  if (!ip) return res.status(400).json({ error: "ip is required" });
-  const session = createSession(ip, { version, community, timeout: 2500, retries: 1 });
-  try {
-    const base = OIDS.hrSWRunPerfCPU;
-    const varbinds = await walk(session, base);
-    
-    const rows = varbinds
-      .filter(vb => !require("net-snmp").isVarbindError(vb))
-      .map(vb => ({
-        index: extractIndex(vb.oid, base),
-        cpu: Number(vb.value)
-      }));
-    res.json({
-      target: ip,
-      oid: base,
-      count: rows.length,
-      data: rows
-    });
-  }catch(e){
-    res.status(502).json({ error: e?.message || String(e) });
-  } finally {
-    closeSession(session);
-  }
-}
-
-//GET /api/snmp/hrswrun/perfmem?ip=1.2.3.4&community=public
-async function getHrSWRunPerfMem(req, res) {
-  const ip = req.query.ip;
-  const community = req.query.community || "public";
-  const version = req.query.version || "2c";
-  
-  if (!ip) return res.status(400).json({ error: "ip is required" });
-  const session = createSession(ip, { version, community, timeout: 2500, retries: 1 });
-  try {
-    const base = OIDS.hrSWRunPerfMem;
-    const varbinds = await walk(session, base);
-    
-    const rows = varbinds
-      .filter(vb => !require("net-snmp").isVarbindError(vb))
-      .map(vb => ({
-        index: extractIndex(vb.oid, base),
-        mem: Number(vb.value)
-      }));
-    res.json({
-      target: ip,
-      oid: base,
-      count: rows.length,
-      data: rows
-    });
-  }catch(e){
-    res.status(502).json({ error: e?.message || String(e) });
-  } finally {
-    closeSession(session);
-  }
-}
-
 function vbToString(val) {
   if (Buffer.isBuffer(val)) return val.toString("utf8").replace(/\u0000/g, "");
   return String(val ?? "");
@@ -586,11 +323,43 @@ function humanBytes(n) {
   return `${x.toFixed(x < 10 ? 2 : 1)} ${units[i]}`;
 }
 
+// GET /api/snmp/cpu?ip=1.2.3.4&community=public
+async function getCpuUsage(req, res) {
+  const ip = req.query.ip;
+  const community = req.query.community || "public";
+  const version = req.query.version || "2c";
+  if (!ip) return res.status(400).json({ error: "ip is required" });
+
+  const session = createSession(ip, { version, community, timeout: 2500, retries: 1 });
+
+  try {
+    const base = "1.3.6.1.2.1.25.3.3.1.2"; // hrProcessorLoad
+    const varbinds = await walk(session, base);
+
+    const rows = varbinds
+      .filter(vb => !snmp.isVarbindError(vb))
+      .map(vb => ({
+        index: extractIndex(vb.oid, base),
+        loadPct: Number(vb.value) // 0-100%
+      }));
+
+    // promedio de todos los CPUs
+    const avg = rows.length > 0
+      ? rows.reduce((a, b) => a + b.loadPct, 0) / rows.length
+      : null;
+
+    res.json({
+      target: ip,
+      count: rows.length,
+      average: avg !== null ? +avg.toFixed(2) : null,
+      data: rows
+    });
+  } catch (e) {
+    res.status(502).json({ error: e?.message || String(e) });
+  } finally {
+    closeSession(session);
+  }
+}
 
 
-
-
-
-
-
-module.exports = { getSysDescr, getHrStorage, getHrSWRunName, getHrStorageType, getHrStorageDescr, getHrStorageAlloc, getHrStorageSize, getHrStorageUsed, getHrSWRunPath, getHrSWRunStatus, getHrSWRunPerfCPU, getHrSWRunPerfMem, getProcesses };
+module.exports = { getSysDescr, getHrStorage, getHrStorageUsed, getProcesses,getCpuUsage,getUsers };
